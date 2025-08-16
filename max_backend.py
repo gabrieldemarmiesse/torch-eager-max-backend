@@ -50,7 +50,6 @@ class MaxTensor(torch.Tensor):
     
     def _add_impl(self, other):
         """Custom add implementation"""
-        print(f"DEBUG: MaxTensor add implementation called")
         
         if not isinstance(other, MaxTensor):
             raise RuntimeError("Can only add MaxTensor to MaxTensor")
@@ -78,7 +77,6 @@ class MaxTensor(torch.Tensor):
         
         # Create result MaxTensor
         result = MaxTensor(self.shape, max_data=output, device=torch.device('max_device'))
-        print(f"DEBUG: Add completed, result shape: {result.shape}")
         return result
     
     def _to_impl(self, device):
