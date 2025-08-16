@@ -10,16 +10,16 @@ def test_gpu_chaining():
     
     # Create tensors on MAX device - these should stay on GPU
     print("\n1. Creating tensors on MAX device:")
-    a = torch.arange(20000, device="max_device")
+    a = torch.arange(200000, device="max_device")
     print(f"a device: {a.device}, has _max_data: {hasattr(a, '_max_data')}")
     
-    b = torch.arange(20000, device="max_device") 
+    b = torch.arange(200000, device="max_device") 
     print(f"b device: {b.device}, has _max_data: {hasattr(b, '_max_data')}")
     
     # Chain multiple operations - these should all stay on GPU
     print("\n2. Performing chained operations (should stay on GPU):")
-    for _ in range(10000):
-        a = a + b
+    for _ in range(100):
+        a = torch.sqrt(b)
     # First add operation
     print("Computing a + b...")
     c = a + b

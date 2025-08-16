@@ -37,16 +37,20 @@ class MaxTensor(torch.Tensor):
         if kwargs is None:
             kwargs = {}
             
-        print(f"DEBUG: MaxTensor dispatch for {func}")
         
         # Handle specific operations
         if func == torch.ops.aten.add.Tensor:
             return self._add_impl(args[1])
+        elif func == torch.ops.aten.mul.Tensor:
+            return self._mul_impl(args[1])
+        elif func == torch.ops.aten.sqrt.default:
+            return self._sqrt_impl()
         elif func == torch.ops.aten._to_copy.default:
             return self._to_impl(kwargs.get('device'))
         else:
-            # For other operations, fall back to default behavior
-            return func(*args, **kwargs)
+            raise NotImplementedError(
+                f"Operation {func} not implemented for MaxTensor"
+            )
     
     def _add_impl(self, other):
         """Custom add implementation"""
@@ -74,6 +78,66 @@ class MaxTensor(torch.Tensor):
         session = engine.InferenceSession(devices=list(get_accelerators()))
         model = session.load(graph)
         output = model.execute(lhs_data, rhs_data)[0]
+        
+        # Create result MaxTensor
+        result = MaxTensor(self.shape, max_data=output, device=torch.device('max_device'))
+        return result
+    
+    def _mul_impl(self, other):
+        """Custom multiply implementation"""
+        print(f"DEBUG: MaxTensor multiply implementation called")
+        
+        if not isinstance(other, MaxTensor):
+            raise RuntimeError("Can only multiply MaxTensor with MaxTensor")
+            
+        # Get MAX data from tensors
+        lhs_data = self._max_data
+        rhs_data = other._max_data
+        
+        if lhs_data is None or rhs_data is None:
+            raise RuntimeError("Tensors don't have MAX data")
+
+        # Create computation graph
+        input_type = TensorType(
+            dtype=DType.float32, shape=list(self.shape), device=DeviceRef.GPU()
+        )
+        with Graph("mul_graph", input_types=(input_type, input_type)) as graph:
+            lhs, rhs = graph.inputs
+            out = ops.mul(lhs, rhs)
+            graph.output(out)
+
+        # Execute on MAX engine
+        session = engine.InferenceSession(devices=list(get_accelerators()))
+        model = session.load(graph)
+        output = model.execute(lhs_data, rhs_data)[0]
+        
+        # Create result MaxTensor
+        result = MaxTensor(self.shape, max_data=output, device=torch.device('max_device'))
+        print(f"DEBUG: Multiply completed, result shape: {result.shape}")
+        return result
+    
+    def _sqrt_impl(self):
+        """Custom sqrt implementation"""
+        
+        # Get MAX data from tensor
+        input_data = self._max_data
+        
+        if input_data is None:
+            raise RuntimeError("Tensor doesn't have MAX data")
+
+        # Create computation graph
+        input_type = TensorType(
+            dtype=DType.float32, shape=list(self.shape), device=DeviceRef.GPU()
+        )
+        with Graph("sqrt_graph", input_types=(input_type,)) as graph:
+            input_tensor, = graph.inputs
+            out = ops.sqrt(input_tensor)
+            graph.output(out)
+
+        # Execute on MAX engine
+        session = engine.InferenceSession(devices=list(get_accelerators()))
+        model = session.load(graph)
+        output = model.execute(input_data)[0]
         
         # Create result MaxTensor
         result = MaxTensor(self.shape, max_data=output, device=torch.device('max_device'))
