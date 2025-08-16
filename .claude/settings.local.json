@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(uv run:*)"
+      "Bash(uv run:*)",
+      "Bash(grep:*)",
+      "WebFetch(domain:docs.pytorch.org)"
     ],
     "deny": [],
     "ask": []

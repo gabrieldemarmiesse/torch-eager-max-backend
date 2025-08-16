@@ -8,6 +8,97 @@ import torch
 import numpy as np
 from torch_max_backend import get_accelerators
 
+
+class MaxTensor(torch.Tensor):
+    """Custom tensor subclass that holds MAX engine data"""
+    
+    @staticmethod
+    def __new__(cls, data, max_data=None, device=None):
+        # Create tensor with proper device
+        if isinstance(data, torch.Tensor):
+            r = torch.Tensor._make_wrapper_subclass(
+                cls, data.shape, 
+                dtype=data.dtype,
+                device=device or torch.device('max_device'),
+                requires_grad=data.requires_grad
+            )
+        else:
+            # data is a shape tuple
+            r = torch.Tensor._make_wrapper_subclass(
+                cls, data,
+                dtype=torch.float32,
+                device=device or torch.device('max_device'),
+                requires_grad=False
+            )
+        r._max_data = max_data
+        return r
+
+    def __torch_dispatch__(self, func, types, args, kwargs=None):
+        if kwargs is None:
+            kwargs = {}
+            
+        print(f"DEBUG: MaxTensor dispatch for {func}")
+        
+        # Handle specific operations
+        if func == torch.ops.aten.add.Tensor:
+            return self._add_impl(args[1])
+        elif func == torch.ops.aten._to_copy.default:
+            return self._to_impl(kwargs.get('device'))
+        else:
+            # For other operations, fall back to default behavior
+            return func(*args, **kwargs)
+    
+    def _add_impl(self, other):
+        """Custom add implementation"""
+        print(f"DEBUG: MaxTensor add implementation called")
+        
+        if not isinstance(other, MaxTensor):
+            raise RuntimeError("Can only add MaxTensor to MaxTensor")
+            
+        # Get MAX data from tensors
+        lhs_data = self._max_data
+        rhs_data = other._max_data
+        
+        if lhs_data is None or rhs_data is None:
+            raise RuntimeError("Tensors don't have MAX data")
+
+        # Create computation graph
+        input_type = TensorType(
+            dtype=DType.float32, shape=list(self.shape), device=DeviceRef.GPU()
+        )
+        with Graph("add_graph", input_types=(input_type, input_type)) as graph:
+            lhs, rhs = graph.inputs
+            out = ops.add(lhs, rhs)
+            graph.output(out)
+
+        # Execute on MAX engine
+        session = engine.InferenceSession(devices=list(get_accelerators()))
+        model = session.load(graph)
+        output = model.execute(lhs_data, rhs_data)[0]
+        
+        # Create result MaxTensor
+        result = MaxTensor(self.shape, max_data=output, device=torch.device('max_device'))
+        print(f"DEBUG: Add completed, result shape: {result.shape}")
+        return result
+    
+    def _to_impl(self, device):
+        """Custom to() implementation"""
+        if device is not None and device.type == 'cpu':
+            print(f"DEBUG: Converting MaxTensor to CPU")
+            max_data = self._max_data
+            if max_data is None:
+                return torch.zeros(self.shape, dtype=self.dtype, device='cpu')
+            
+            try:
+                cpu_array = max_data.to_numpy()
+                return torch.from_numpy(cpu_array).float()
+            except Exception as e:
+                print(f"GPU->CPU transfer failed: {e}")
+                return torch.zeros(self.shape, dtype=self.dtype, device='cpu')
+        
+        # For other devices, return a copy
+        return MaxTensor(self.shape, max_data=self._max_data, device=device)
+
 class MaxDeviceModule:
    
     
@@ -57,40 +148,36 @@ class Custom:
 
 
 def register_max_ops():
-    @torch.library.impl("aten::arange", "PrivateUse1")
+    @torch.library.impl("aten::empty.memory_format", "PrivateUse1")
+    def empty_max(size, dtype=None, layout=None, device=None, pin_memory=None, memory_format=None):
+        # Create a meta tensor first, then create the storage for max_device
+        meta_tensor = torch.empty(size, dtype=dtype or torch.float32, device='meta')
+        # Now we need to make this tensor appear as max_device
+        # For now, return meta tensor - PyTorch will handle device assignment
+        meta_tensor._max_data = None
+        return meta_tensor
+        
+    @torch.library.impl("aten::arange", "PrivateUse1") 
     def arange_max(end, dtype=None, layout=None, device=None, pin_memory=None):
         print(f"DEBUG: arange called with end={end}, device={device}")
+        
+        # Create the computation graph
         with Graph(
-            "simple_add_graph", input_types=tuple()
+            "arange_graph", input_types=tuple()
         ) as graph:
-            out = ops.range(0, end,1, device=DeviceRef.GPU())
+            out = ops.range(0, end, 1, device=DeviceRef.GPU())
             graph.output(out)
 
+        # Execute on MAX engine
         session = engine.InferenceSession(devices=list(get_accelerators()))
         model = session.load(graph)
         output = model.execute()[0]
         
-        return torch.tensor(Custom(output), dtype=torch.float32, device="max_device")
+        # Return MaxTensor with GPU data
+        result = MaxTensor((int(end),), max_data=output, device=torch.device('max_device'))
+        print(f"DEBUG: Created MaxTensor with shape {result.shape} (data kept on GPU)")
+        return result
     
-    @torch.library.impl("aten::add.Tensor", "max_device")
-    def custom_cpu_add(self, other, *, alpha=1):
-        print(f"Custom CPU add called!")
-
-        input_type = TensorType(
-            dtype=DType.float32, shape=("dim1", "dim2"), device=DeviceRef.GPU()
-        )
-        with Graph(
-            "simple_add_graph", input_types=(input_type, input_type)
-        ) as graph:
-            lhs, rhs = graph.inputs
-            out = ops.add(lhs, rhs)
-            graph.output(out)
-
-        session = engine.InferenceSession()
-        model = session.load(graph)
-        output = model.execute(self, other)[0]
-        
-        return torch.from_dlpack(output)
 
 
 class MaxDeviceBackend:
